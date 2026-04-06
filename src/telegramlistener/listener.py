@@ -1,82 +1,76 @@
-"""Telegram real-time listener with queue-based output."""
+"""Real-time Telegram listener and normalized streamed message models."""
 
 import asyncio
-import sqlite3
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import ulid
 from cleantext import clean
-from telethon import TelegramClient as TelethonClient, events
-from telethon.errors import AuthKeyDuplicatedError, AuthKeyUnregisteredError
+from telethon import events
 from telethon.tl.types import Message as TelethonMessage
 
-from .login import SESSION_PATH, session_file_path, telegram_login
+from .session_manager import SessionManager
 
+logger = logging.getLogger("telegram_listener")
 
-def _default_session_dir() -> Path:
-    """Build and create the Telegram session directory."""
-    session_dir = Path.home() / ".cache" / "telegramlistener"
-    session_dir.mkdir(parents=True, exist_ok=True)
-    return session_dir
-
+# --- Passive Utilities ---
 
 def _sanitize_text(text: str) -> str:
-    """Clean text using cleantext library."""
+    """Normalize Telegram message text for downstream processing."""
     return clean(
         text,
         fix_unicode=True,
         to_ascii=False,
         lower=False,
-        no_line_breaks=False,
-        no_urls=False,
-        no_emails=False,
-        no_phone_numbers=False,
-        no_numbers=False,
-        no_digits=False,
-        no_currency_symbols=False,
-        no_punct=False,
         no_emoji=True,
-        lang="en",
     ).strip()
 
-
 def _build_unix_ulid(timestamp: int) -> str:
-    """Build stable ID: <unix_timestamp>_<ulid>."""
+    """Build a stable message identifier using unix time and ULID."""
     return f"{timestamp}_{ulid.new()}"
 
-
 def _normalize_channel_key(channel: str) -> str:
-    """Normalize channel name to @-prefixed format."""
+    """Normalize channel keys to lowercase @-prefixed values."""
     c = str(channel or "").strip().lower()
-    if not c:
-        return ""
-    if c.startswith("@"):
-        return c
-    return f"@{c}"
-
-
-def _extract_lang(spec) -> str:
-    """Extract language from dict or string spec."""
-    if isinstance(spec, str):
-        return spec.strip().lower() or "unknown"
-    if isinstance(spec, dict):
-        lang = str(
-            spec.get("language")
-            or spec.get("lang")
-            or spec.get("language_code")
-            or ""
-        ).strip().lower()
-        return lang or "unknown"
-    return "unknown"
-
+    if not c: return ""
+    return f"@{c.lstrip('@')}"
 
 @dataclass(frozen=True)
 class TelegramStreamedMessage:
-    """Telegram-specific message container produced by the listener."""
+    """
+    Immutable container for normalized streamed Telegram messages.
 
+    The object represents the minimal, transport-friendly payload produced by
+    the listener and consumed by downstream processors.
+
+    Attributes
+    ----------
+    timestamp : int
+        Unix timestamp normalized to the listener timezone.
+    source : str
+        Human-readable channel title.
+    source_id : int
+        Numeric Telegram chat identifier.
+    text : str
+        Sanitized message content.
+    language : str
+        Language tag associated with the channel.
+    global_id : str
+        Stable identifier in the form "<timestamp>_<ulid>".
+
+    Methods
+    -------
+    __str__():
+        Return a compact, human-readable representation.
+
+    Example
+    -------
+    >>> m = TelegramStreamedMessage(1700000000, "news", 123, "hello")
+    >>> m.global_id.startswith("1700000000_")
+    True
+    """
     timestamp: int
     source: str
     source_id: int
@@ -85,157 +79,129 @@ class TelegramStreamedMessage:
     global_id: str = field(init=False)
 
     def __post_init__(self) -> None:
-        """Generate stable global ID on initialization."""
+        """Populate the derived global identifier after initialization."""
         object.__setattr__(self, "global_id", _build_unix_ulid(self.timestamp))
-
+    
     def __str__(self) -> str:
-        """Return formatted message representation."""
-        return (
-            f"  global_id={self.global_id}\n"
-            f"  timestamp={self.timestamp}\n"
-            f"  source={self.source}\n"
-            f"  source_id={self.source_id}\n"
-            f"  language={self.language}\n"
-            f"  text={self.text}\n"
-        )
-
+        """Render a compact multi-line preview of the streamed message."""
+        return (f"StreamedMessage(\n"
+                f"      timestamp={self.timestamp},\n"
+                f"      global_id={self.global_id},\n"
+                f"      source={self.source},\n"
+                f"      source_id={self.source_id},\n"
+                f"      language={self.language},\n"
+                f"      text={self.text[:30]}...)"
+                )
+    
+# --- The Modern Listener ---
 
 class TelegramListener:
     """
-    Real-time Telegram message listener with queue-based output.
-
-    Requires a pre-authenticated session file under .cache/telegramlistener.
-    Incoming messages are converted to TelegramStreamedMessage and queued for
-    downstream processing.
+    Example
+    -------
+    >>> # 1. Dependency Injection: Pass the manager to the listener
+    >>> listener = TelegramListener(session_manager=manager)
+    >>> listener.set_channels([{"channel": "ajanews", "language": "ar"}])
+    
+    >>> # 2. Run the listener and a consumer concurrently
+    >>> async def simple_consumer(q):
+    ...     while True:
+    ...         msg = await q.get()
+    ...         print(f"New Message: {msg}")
+    ...         q.task_done()
+    
+    >>> # 3. Start the loop (this will block until stopped)
+    >>> try:
+    ...     await asyncio.gather(
+    ...         listener.start(),
+    ...         simple_consumer(listener.queue)
+    ...     )
+    ... except KeyboardInterrupt:
+    ...     listener.stop()
     """
 
     def __init__(
         self,
-        api_id: int,
-        api_hash: str,
-        phone: str,
-        session_path: str | Path | None = None,
-        timezone_name: str = "UTC",
-        channel_languages: list[str] | list[dict[str, str]] | None = None,
+        session_manager: SessionManager,
+        timezone_name: str = "UTC"
     ) -> None:
-        """Initialize Telegram stream client.
+        """
+        Initialize a listener bound to a session manager and timezone.
 
         Parameters
         ----------
-        api_id : int
-            Telegram API ID.
-        api_hash : str
-            Telegram API hash.
-        phone : str
-            Phone number for login when no valid session exists.
-        session_path : str | Path | None
-            Optional base path for the Telethon session.
+        session_manager : SessionManager
+            Session manager responsible for authorization and client creation.
         timezone_name : str
-            IANA timezone for message timestamp normalization.
-        channel_languages : list[str] | list[dict[str, str]] | None
-            Optional list of channels or channel dictionaries with language.
+            IANA timezone used to normalize output timestamps.
+
+        Raises
+        ------
+        ZoneInfoNotFoundError
+            Raised when `timezone_name` is not a valid IANA timezone.
         """
-        if not api_id or not api_hash:
-            raise ValueError("api_id and api_hash are required")
-
-        self.api_id = api_id
-        self.api_hash = api_hash
-        self.phone = phone
+        # Dependency Injection
+        self.manager = session_manager
         self._tz = ZoneInfo(timezone_name)
-
-        base_dir = Path(session_path) if session_path is not None else _default_session_dir()
-        base_dir.mkdir(parents=True, exist_ok=True)
-        self.session_path = base_dir / "telegram"
-        self._client = TelethonClient(str(self.session_path), api_id, api_hash)
-
+        
+        # Telethon Client (State)
+        self.client = None
         self.queue: asyncio.Queue[TelegramStreamedMessage] = asyncio.Queue()
-        self._stop_requested = False
-        self._stream_registered = False
+        
+        # Internal configuration
         self._channels: list[str] = []
+        self._channel_languages: dict[str, str] = {}
+        
+        # Caches for performance
         self._chat_cache: dict[int, str] = {}
         self._chat_lang_key_cache: dict[int, str] = {}
-        self._channel_languages: dict[str, str] = {}
+        
+        self._stop_requested = False
 
-        if channel_languages:
-            self.set_channel_languages(channel_languages)
+    def set_channels(self, channel_data: list[str] | list[dict]) -> None:
+        """
+        Configure channels to monitor and optional language metadata.
 
-    @property
-    def lag(self) -> timedelta:
-        """Return current queue lag."""
-        if self.queue.empty():
-            return timedelta(0)
-        oldest_ts = self.queue._queue[0].timestamp
-        now_ts = int(datetime.now(self._tz).timestamp())
-        return timedelta(seconds=max(0, now_ts - oldest_ts))
+        Parameters
+        ----------
+        channel_data : list[str] | list[dict]
+            Channel configuration as either usernames or dictionaries with
+            keys such as `channel`/`name` and `language`/`lang`.
 
-    @property
-    def queue_size(self) -> int:
-        """Return number of pending messages."""
-        return self.queue.qsize()
-
-    def set_channel_languages(self, channel_languages: list[str] | list[dict[str, str]]) -> None:
-        """Update channel list and per-channel language mapping."""
+        Returns
+        -------
+        None
+            Updates internal channel and language mappings in place.
+        """
         self._channels = []
         self._channel_languages = {}
 
-        if all(isinstance(item, str) for item in channel_languages):
-            for channel in channel_languages:
-                channel_name = str(channel).strip()
-                if not channel_name:
-                    continue
-                self._channels.append(channel_name)
-                self._channel_languages[_normalize_channel_key(channel_name)] = "unknown"
-            return
+        for item in channel_data:
+            if isinstance(item, str):
+                name, lang = item, "unknown"
+            else:
+                name = item.get("channel") or item.get("name") or item.get("source", "")
+                lang = item.get("language") or item.get("lang") or "unknown"
+            
+            if name:
+                clean_name = name.strip()
+                self._channels.append(clean_name)
+                self._channel_languages[_normalize_channel_key(clean_name)] = lang.lower()
 
-        if all(isinstance(item, dict) for item in channel_languages):
-            for item in channel_languages:
-                channel_name = str(item.get("channel", item.get("name", ""))).strip()
-                if not channel_name:
-                    continue
-                self._channels.append(channel_name)
-                self._channel_languages[_normalize_channel_key(channel_name)] = _extract_lang(item)
-            return
-
-        raise TypeError("channels must be list[str] or list[dict[channel, language]]")
-
-    async def connect(self) -> None:
-        """Establish connection using the cached session or create a new one."""
-        session_file = session_file_path()
-
-        if session_file.exists():
-            try:
-                await self._client.connect()
-                if await self._client.is_user_authorized():
-                    return
-            except (AuthKeyUnregisteredError, AuthKeyDuplicatedError, sqlite3.OperationalError):
-                pass
-            session_file.unlink(missing_ok=True)
-            self._client = TelethonClient(str(self.session_path), self.api_id, self.api_hash)
-
-        if not self.phone:
-            raise ValueError("Phone required to login. No session found.")
-
-        await telegram_login(self.api_id, self.api_hash, self.phone)
-        self._client = TelethonClient(str(self.session_path), self.api_id, self.api_hash)
-        await self._client.connect()
-        if not await self._client.is_user_authorized():
-            raise RuntimeError("Session was created but not authorized.")
-
-    async def disconnect(self) -> None:
-        """Disconnect from Telegram."""
-        self._stop_requested = True
-        await self._client.disconnect()
-
-    async def _build_message(self, msg: TelethonMessage) -> TelegramStreamedMessage | None:
-        """Convert Telethon message to TelegramStreamedMessage."""
+    async def _message_handler(self, event: events.NewMessage.Event) -> None:
+        """Transform a raw Telethon event into a queued streamed message."""
+        msg: TelethonMessage = event.message
         text = _sanitize_text((msg.message or "").strip())
+        
         if not text:
-            return None
+            return
 
         chat_id = msg.chat_id
+        
+        # Resolve source name and language mapping
         if chat_id not in self._chat_cache:
             chat = await msg.get_chat()
-            self._chat_cache[chat_id] = getattr(chat, "title", str(chat.id))
+            self._chat_cache[chat_id] = getattr(chat, "title", str(chat_id))
             username = getattr(chat, "username", None)
             key_source = username if username else self._chat_cache[chat_id]
             self._chat_lang_key_cache[chat_id] = _normalize_channel_key(key_source)
@@ -244,50 +210,74 @@ class TelegramListener:
         lang_key = self._chat_lang_key_cache.get(chat_id, "")
         language = self._channel_languages.get(lang_key, "unknown")
 
-        return TelegramStreamedMessage(
+        # Build and Queue
+        streamed_msg = TelegramStreamedMessage(
             timestamp=timestamp,
             source=self._chat_cache[chat_id],
             source_id=chat_id,
             text=text,
             language=language,
         )
+        await self.queue.put(streamed_msg)
 
-    def _register_stream(self) -> None:
-        """Register a message handler once for the current channel list."""
-        if self._stream_registered:
-            return
+    async def start(self) -> None:
+        """
+        Start the listener loop and stream incoming messages to the queue.
+
+        Returns
+        -------
+        None
+            Runs until `stop()` is requested or the client disconnects.
+
+        Raises
+        ------
+        ValueError
+            Raised when no channels were configured before startup.
+        RuntimeError
+            Raised when the session manager reports a non-operational session.
+        """
         if not self._channels:
-            raise ValueError("No channels configured. Pass channels to ingest().")
+            raise ValueError("No channels configured. Call set_channels() first.")
 
-        self._stream_registered = True
+        # 1. Operational Check (The Fail-Safe)
+        if not await self.manager.is_operational():
+            raise RuntimeError("🚫 Session is not operational. Run manual login first.")
 
-        @self._client.on(events.NewMessage(chats=self._channels))
-        async def _handler(event: events.NewMessage.Event) -> None:
-            parsed = await self._build_message(event.message)
-            if parsed is not None:
-                await self.queue.put(parsed)
-
-    async def ingest(self, channels: list[str] | list[dict[str, str]]) -> None:
-        """Configure channels and attach real-time handlers."""
-        self.set_channel_languages(channels)
-        self._register_stream()
-
-    async def run(self) -> None:
-        """Keep the listener alive."""
+        # 2. Get the authorized client
+        self.client = await self.manager.get_authorized_client()
+        
+        # 3. Register the event handler
+        self.client.on(events.NewMessage(chats=self._channels))(self._message_handler)
+        
+        logger.info("Listener online. Monitoring %s sources.", len(self._channels))
+        
         self._stop_requested = False
         while not self._stop_requested:
             try:
-                await self._client.run_until_disconnected()
-            except (AuthKeyUnregisteredError, AuthKeyDuplicatedError, sqlite3.OperationalError):
+                await self.client.run_until_disconnected()
+            except Exception as e:
                 if self._stop_requested:
                     break
-                session_file = session_file_path()
-                session_file.unlink(missing_ok=True)
-                self._client = TelethonClient(str(self.session_path), self.api_id, self.api_hash)
-                if self.phone:
-                    await telegram_login(self.api_id, self.api_hash, self.phone)
-                    self._client = TelethonClient(str(self.session_path), self.api_id, self.api_hash)
-                    await self._client.connect()
+                
+                logger.warning("🔄 Connection lost: %s. Re-verifying session in 15s...", e)
+                await asyncio.sleep(15)
+                
+                # Double-check if the session survived the crash
+                if await self.manager.is_operational():
+                    await self.client.connect()
                 else:
-                    raise
+                    logger.error("🚫 Session revoked or corrupted. Stopping listener.")
+                    self._stop_requested = True
+                    break
 
+    def stop(self) -> None:
+        """
+        Request a graceful shutdown of the listener loop.
+
+        Returns
+        -------
+        None
+            Sets the internal stop flag consumed by `start()`.
+        """
+        logger.info("🛑 Stop requested.")
+        self._stop_requested = True

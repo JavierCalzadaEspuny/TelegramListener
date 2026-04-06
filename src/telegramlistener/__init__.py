@@ -1,5 +1,6 @@
 """Public exports for the telegramlistener package."""
 
-from .listener import TelegramListener, TelegramStreamedMessage
+from .session_manager import SessionManager
+from .listener import TelegramStreamedMessage, TelegramListener
 
-__all__ = ["TelegramListener", "TelegramStreamedMessage"]
+__all__ = ["SessionManager", "TelegramListener", "TelegramStreamedMessage"]
