@@ -1,37 +1,23 @@
 # TelegramListener
 
-TelegramListener is a lightweight Python package for consuming Telegram channel
-messages in real time using a queue-based workflow.
+TelegramListener is a lightweight package to consume Telegram channel messages
+in real time with a queue-based architecture.
 
-## What It Does
+It uses a dedicated `SessionManager` to keep login/session logic isolated from
+the streaming `TelegramListener` runtime.
 
-- Creates and reuses a local Telethon session.
-- Listens to one or more Telegram channels in real time.
-- Normalizes incoming text with clean-text.
-- Emits a simple `TelegramMessage` dataclass to an async queue.
-- Supports optional per-channel language metadata.
-- Stores runtime session files in `~/.cache_telegramlistener` by default.
+## Features
+
+- Real-time consumption of Telegram channel messages.
+- Queue-based output for easy async processing.
+- Session health checks and manual login flow.
+- Message normalization with `clean-text`.
+- Stable message IDs with Unix timestamp + ULID.
+- Structured logging ready for local and production runs.
 
 ## Install
 
-Repository links:
-
-- Web: https://github.com/JavierCalzadaEspuny/TelegramListener
-- Git clone: https://github.com/JavierCalzadaEspuny/TelegramListener.git
-
-Install directly from GitHub:
-
-```bash
-uv add git+https://github.com/JavierCalzadaEspuny/TelegramListener.git
-```
-
-Or with pip:
-
-```bash
-pip install git+https://github.com/JavierCalzadaEspuny/TelegramListener.git
-```
-
-For local development:
+Install from source (local development):
 
 ```bash
 git clone https://github.com/JavierCalzadaEspuny/TelegramListener.git
@@ -39,77 +25,120 @@ cd TelegramListener
 uv sync
 ```
 
-## Basic Use
+Install directly from GitHub:
+
+```bash
+uv add git+https://github.com/JavierCalzadaEspuny/TelegramListener.git
+```
+
+Or with `pip`:
+
+```bash
+pip install git+https://github.com/JavierCalzadaEspuny/TelegramListener.git
+```
+
+## Configuration
+
+Create a `.env` file (or copy `.env.example`) with:
+
+```dotenv
+TELEGRAM_API_ID=12345678
+TELEGRAM_API_HASH=your_api_hash_here
+TELEGRAM_PHONE=+34123456789
+TELEGRAM_SESSION_NAME=telegram
+```
+
+Variables:
+
+- `TELEGRAM_API_ID`: Telegram API id.
+- `TELEGRAM_API_HASH`: Telegram API hash.
+- `TELEGRAM_PHONE`: Phone number for manual login.
+- `TELEGRAM_SESSION_NAME`: Session file name prefix (optional, default `telegram`).
+
+## Public API
+
+```python
+from telegramlistener import SessionManager, TelegramListener, TelegramStreamedMessage
+```
+
+## Quick Start
 
 ```python
 import asyncio
-from telegramlistener import TelegramListener
+import os
+
+from telegramlistener import SessionManager, TelegramListener
 
 
-async def main() -> None:
-    listener = TelegramListener(
-        api_id=123456,
-        api_hash="your_api_hash",
-        timezone_name="UTC",
-    )
-
-    await listener.connect()
-    await listener.ingest(["@channel_one", "@channel_two"])
-
+async def consumer(listener: TelegramListener) -> None:
     while True:
-        message = await listener.queue.get()
-        print(message.source, message.text)
-
-
-asyncio.run(main())
-```
-
-## Login Flow (run once)
-
-Before listening, create the local session file:
-
-```python
-import asyncio
-from telegramlistener.login import TelegramLoginClient
+        msg = await listener.queue.get()
+        print(msg)
+        listener.queue.task_done()
 
 
 async def main() -> None:
-    client = TelegramLoginClient(
-        api_id=123456,
-        api_hash="your_api_hash",
-        phone="+34123456789",
+    manager = SessionManager(
+        api_id=int(os.environ["TELEGRAM_API_ID"]),
+        api_hash=os.environ["TELEGRAM_API_HASH"],
+        phone=os.environ["TELEGRAM_PHONE"],
+        session_name=os.getenv("TELEGRAM_SESSION_NAME", "telegram"),
     )
-    await client.run()
+
+    if not await manager.is_operational():
+        await manager.run_manual_login()
+
+    listener = TelegramListener(session_manager=manager, timezone_name="UTC")
+    listener.set_channels([
+        {"channel": "me_observer_tg", "language": "en"},
+        {"channel": "ajanews", "language": "ar"},
+    ])
+
+    consumer_task = asyncio.create_task(consumer(listener))
+    listener_task = asyncio.create_task(listener.start())
+
+    try:
+        await asyncio.gather(listener_task, consumer_task)
+    finally:
+        listener.stop()
+        if listener.client is not None and listener.client.is_connected():
+            await listener.client.disconnect()
+        consumer_task.cancel()
+        listener_task.cancel()
 
 
 asyncio.run(main())
 ```
 
-## Linear Workflow
+## Smoke Run
 
-1. Run `TelegramLoginClient` once and complete Telegram auth.
-2. Create `TelegramListener` with the same `api_id` and `api_hash`.
-3. Call `connect()`.
-4. Call `ingest(...)` with channels.
-5. Consume messages from `listener.queue`.
+The repository includes a runnable smoke script:
+
+```bash
+uv run smoke_run.py
+```
+
+Expected behavior:
+
+- If no valid session exists, it triggers manual login.
+- Once authenticated, it listens to configured channels.
+- Messages are printed and logs are written to `debug.log`.
 
 ## Project Structure
 
 ```text
 src/telegramlistener/
-├── __init__.py       # Public API exports
-├── main.py           # TelegramListener class
-├── login.py          # Session bootstrap flow
-├── models.py         # TelegramMessage + path helpers
-└── telegram.py       # Backward-compatible aliases
+├── __init__.py
+├── listener.py
+└── session_manager.py
 
-pyproject.toml        # Package metadata and dependencies
-.gitignore            # Python and runtime cache ignores
-README.md             # Documentation
+smoke_run.py
+pyproject.toml
+README.md
 ```
 
 ## Notes
 
-- The package is intentionally small and explicit for easy maintenance.
-- Runtime sessions are stored in `~/.cache_telegramlistener/.cache_telegram_sessions`.
-- `telegram.py` remains as a compatibility layer for existing imports.
+- Session files are stored in `~/.cache/telegramlistener`.
+- This package does not auto-login silently on runtime reconnection.
+- You control login explicitly through `SessionManager.run_manual_login()`.
