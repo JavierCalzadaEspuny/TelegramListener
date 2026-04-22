@@ -15,9 +15,9 @@ authors = [
 dependencies = [
 	"telethon>=1.36.0",
 	"clean-text>=0.6.0",
-	"ulid-py>=1.1.0",
 	"python-dotenv>=1.0.1",
 	"unidecode>=1.4.0",
+	"python-ulid>=3.1.0",
 ]
 
 [project.optional-dependencies]

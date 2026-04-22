@@ -27,10 +27,6 @@ def _sanitize_text(text: str) -> str:
         no_emoji=True,
     ).strip()
 
-def _build_unix_ulid(timestamp: int) -> str:
-    """Build a stable message identifier using unix time and ULID."""
-    return f"{timestamp}_{ulid.new()}"
-
 def _normalize_channel_key(channel: str) -> str:
     """Normalize channel keys to lowercase @-prefixed values."""
     c = str(channel or "").strip().lower()
@@ -57,8 +53,8 @@ class TelegramStreamedMessage:
         Sanitized message content.
     language : str
         Language tag associated with the channel.
-    global_id : str
-        Stable identifier in the form "<timestamp>_<ulid>".
+    id : str
+        Stable identifier.
 
     Methods
     -------
@@ -68,7 +64,7 @@ class TelegramStreamedMessage:
     Example
     -------
     >>> m = TelegramStreamedMessage(1700000000, "news", 123, "hello")
-    >>> m.global_id.startswith("1700000000_")
+    >>> m.id.startswith("1700000000_")
     True
     """
     timestamp: int
@@ -76,17 +72,17 @@ class TelegramStreamedMessage:
     source_id: int
     text: str
     language: str = "unknown"
-    global_id: str = field(init=False)
+    id: str = field(init=False)
 
     def __post_init__(self) -> None:
-        """Populate the derived global identifier after initialization."""
-        object.__setattr__(self, "global_id", _build_unix_ulid(self.timestamp))
+        """Populate the identifier after initialization."""
+        object.__setattr__(self, "id", str(ulid.ULID()))
     
     def __str__(self) -> str:
         """Render a compact multi-line preview of the streamed message."""
         return (f"StreamedMessage(\n"
                 f"      timestamp={self.timestamp},\n"
-                f"      global_id={self.global_id},\n"
+                f"      id={self.id},\n"
                 f"      source={self.source},\n"
                 f"      source_id={self.source_id},\n"
                 f"      language={self.language},\n"
@@ -241,7 +237,7 @@ class TelegramListener:
 
         # 1. Operational Check (The Fail-Safe)
         if not await self.manager.is_operational():
-            raise RuntimeError("🚫 Session is not operational. Run manual login first.")
+            raise RuntimeError("❌ Session is not operational. Run manual login first.")
 
         # 2. Get the authorized client
         self.client = await self.manager.get_authorized_client()
@@ -259,14 +255,14 @@ class TelegramListener:
                 if self._stop_requested:
                     break
                 
-                logger.warning("🔄 Connection lost: %s. Re-verifying session in 15s...", e)
+                logger.warning("⚠️ Connection lost: %s. Re-verifying session in 15s...", e)
                 await asyncio.sleep(15)
                 
                 # Double-check if the session survived the crash
                 if await self.manager.is_operational():
                     await self.client.connect()
                 else:
-                    logger.error("🚫 Session revoked or corrupted. Stopping listener.")
+                    logger.error("❌ Session revoked or corrupted. Stopping listener.")
                     self._stop_requested = True
                     break
 
@@ -279,5 +275,5 @@ class TelegramListener:
         None
             Sets the internal stop flag consumed by `start()`.
         """
-        logger.info("🛑 Stop requested.")
+        logger.info("🟥 Stop requested.")
         self._stop_requested = True

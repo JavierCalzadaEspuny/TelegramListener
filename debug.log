@@ -116,3 +116,7 @@
 2026-04-06 13:16:47,376 [telethon.network.mtprotosender] INFO: Connecting to 149.154.167.91:443/TcpFull...
 2026-04-06 13:16:47,496 [telethon.network.mtprotosender] INFO: Connection to 149.154.167.91:443/TcpFull complete!
 2026-04-06 13:16:47,741 [telegram_listener] INFO: Listener online. Monitoring 2 sources.
+2026-04-06 13:27:02,207 [telethon.network.mtprotosender] INFO: Disconnecting from 149.154.167.91:443/TcpFull...
+2026-04-06 13:27:02,209 [telegram_listener] INFO: 🛑 Stop requested.
+2026-04-06 13:27:02,210 [telethon.network.mtprotosender] INFO: Disconnection from 149.154.167.91:443/TcpFull complete!
+2026-04-06 13:27:02,211 [smoke_run] INFO: 🛑 Stopped by user.
