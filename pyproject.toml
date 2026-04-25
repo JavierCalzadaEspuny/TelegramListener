@@ -5,27 +5,36 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "telegramlistener"
 version = "0.1.0"
-description = "Lightweight Telegram real-time listener with queue-based output."
+description = "Stream Telegram channel messages to an asyncio queue."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [
-	{ name = "Javier Calzada" }
+authors = [{ name = "Javier Calzada", email = "calzada.espuny.javier@gmail.com" }]
+keywords = ["telegram", "telethon", "async", "streaming", "queue"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Framework :: AsyncIO",
+    "Topic :: Communications :: Chat",
 ]
 dependencies = [
-	"telethon>=1.36.0",
-	"clean-text>=0.6.0",
-	"python-dotenv>=1.0.1",
-	"unidecode>=1.4.0",
-	"python-ulid>=3.1.0",
+    "telethon>=1.36.0",
+    "ftfy>=6.0",
+    "emoji>=2.1.0",
+    "python-ulid>=3.1.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/Cerval/TelegramListener"
+Repository = "https://github.com/Cerval/TelegramListener"
+Issues = "https://github.com/Cerval/TelegramListener/issues"
+
 [project.optional-dependencies]
-dev = [
-	"pytest>=8.0.0",
-	"ruff>=0.6.0",
-	"black>=24.0.0",
-]
+examples = ["python-dotenv>=1.0.0"]
 
 [tool.setuptools]
 include-package-data = true
@@ -33,3 +42,15 @@ include-package-data = true
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["telegramlistener*"]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["B008"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true
