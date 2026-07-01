@@ -18,7 +18,7 @@ TelegramListener/
 │   ├── __init__.py        # Public API surface
 │   ├── _listener.py       # TelegramListener — core streaming class
 │   ├── _session.py        # SessionManager — auth lifecycle
-│   ├── _models.py         # Channel, TelegramStreamedMessage
+│   ├── _models.py         # TelegramStreamedMessage
 │   └── _exceptions.py     # TelegramListenerError, SessionError, ConfigurationError
 ├── example.py             # End-to-end usage script
 ├── pyproject.toml         # Package metadata, deps, tool config
@@ -26,24 +26,11 @@ TelegramListener/
 ```
 
 All public symbols are re-exported from `__init__.py`:
-`Channel`, `SessionManager`, `TelegramListener`, `TelegramStreamedMessage`, `TelegramListenerError`, `SessionError`, `ConfigurationError`.
+`SessionManager`, `TelegramListener`, `TelegramStreamedMessage`, `TelegramListenerError`, `SessionError`, `ConfigurationError`.
 
 ---
 
 ## Data models (`_models.py`)
-
-### `Channel`
-
-A frozen dataclass representing one Telegram channel to monitor.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `name` | `str` | required | Channel username. Leading `@` is stripped automatically. Always stored lowercase. |
-| `language` | `str` | `"unknown"` | BCP-47 language tag for downstream routing (e.g. `"ar"`, `"en"`). |
-
-`Channel("@AJANews", language="AR")` stores `name="ajanews"`, `language="ar"`.
-
-Plain strings passed to `set_channels()` are auto-converted to `Channel(name=s, language="unknown")`.
 
 ---
 
@@ -57,7 +44,7 @@ A frozen dataclass produced by `TelegramListener` for every incoming message.
 | `source` | `str` | Human-readable channel title (e.g. `"Al Jazeera"`). |
 | `source_id` | `int` | Numeric Telegram chat identifier. Negative for channels/supergroups. |
 | `text` | `str` | Sanitized text: unicode-fixed (`ftfy`) and emoji-stripped (`emoji`). |
-| `language` | `str` | Taken from the matching `Channel.language`, or `"unknown"`. |
+| `language` | `str` | REMOVED — messages no longer carry a language tag. |
 | `id` | `str` | Auto-generated time-sortable ULID (26 chars). Not set via `__init__`. |
 
 `id` is created in `__post_init__` via `ulid.ULID()`. Because ULIDs embed a millisecond timestamp, messages can be sorted by `id` to recover arrival order.
@@ -153,9 +140,9 @@ set_channels(...)          ← configure which channels to monitor
   stop() / aclose()        ← graceful shutdown
 ```
 
-**`set_channels(channels: list[str | Channel])`**
+**`set_channels(channels: list[str])`**
 
-Must be called before `start()`. Stores the channel list; strings are promoted to `Channel` objects. Can be called multiple times to reconfigure before starting.
+Must be called before `start()`. Accepts a list of channel usernames as plain strings. Can be called multiple times to reconfigure before starting.
 
 **`start()` (async, blocking)**
 
@@ -204,11 +191,10 @@ async with TelegramListener(session_manager=manager) as listener:
 Called by Telethon for every new message in the monitored channels.
 
 1. Strips and sanitizes text via `_sanitize()` (unicode fix + emoji removal). Empty results are discarded.
-2. Looks up channel metadata (`title`, `language`) in `_chat_meta` (a `dict[int, tuple[str, str]]` keyed by `chat_id`). On first message from a chat, fetches the chat object from Telegram and caches it.
-3. Language is resolved by matching the channel's `username` against the configured `Channel` list. Defaults to `"unknown"` if no match.
-4. Constructs a `TelegramStreamedMessage` and calls `queue.put_nowait(msg)`.
-5. If the queue is full (`asyncio.QueueFull`), the message is **dropped** (not blocked) and a warning is logged. This preserves the Telethon event loop.
-6. Any unhandled exception is caught and logged; the handler never raises.
+2. Looks up chat metadata (`title`) in `_chat_meta` (a `dict[int, str]` keyed by `chat_id`). On first message from a chat, fetches the chat object from Telegram and caches its title.
+3. Constructs a `TelegramStreamedMessage` and calls `queue.put_nowait(msg)`.
+4. If the queue is full (`asyncio.QueueFull`), the message is **dropped** (not blocked) and a warning is logged. This preserves the Telethon event loop.
+5. Any unhandled exception is caught and logged; the handler never raises.
 
 ---
 
@@ -229,7 +215,6 @@ def _sanitize(text: str) -> str:
 
 ```python
 from telegramlistener import (
-    Channel,
     SessionManager,
     TelegramListener,
     TelegramStreamedMessage,
@@ -245,7 +230,7 @@ from telegramlistener import (
 
 ```python
 import asyncio
-from telegramlistener import Channel, SessionManager, TelegramListener
+from telegramlistener import SessionManager, TelegramListener
 
 async def consume(queue):
     while True:
@@ -269,7 +254,7 @@ async def main():
     async with TelegramListener(session_manager=manager, queue_maxsize=1000) as listener:
         listener.set_channels([
             "cnn",
-            Channel("ajanews", language="ar"),
+            "ajanews",
         ])
         consumer = asyncio.create_task(consume(listener.queue))
         try:

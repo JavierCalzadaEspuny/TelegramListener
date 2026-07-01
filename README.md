@@ -24,7 +24,7 @@ uv add git+https://github.com/Cerval/TelegramListener.git
 ## Quick Start
 
 ```python
-from telegramlistener import Channel, SessionManager, TelegramListener
+from telegramlistener import SessionManager, TelegramListener
 
 manager = SessionManager(api_id=..., api_hash=..., phone="+34612345678")
 
@@ -32,7 +32,7 @@ if not await manager.is_operational():
     await manager.run_manual_login()          # interactive once, session persists
 
 async with TelegramListener(session_manager=manager) as listener:
-    listener.set_channels(["cnn", Channel("ajanews", language="ar")])
+    listener.set_channels(["cnn", "ajanews"])
     await listener.start()                    # blocks; messages arrive on listener.queue
 ```
 
@@ -46,7 +46,7 @@ async with TelegramListener(session_manager=manager) as listener:
 async def consume(queue: asyncio.Queue) -> None:
     while True:
         msg = await queue.get()
-        print(f"[{msg.language}] {msg.source}: {msg.text}")
+        print(f"{msg.source}: {msg.text}")
         queue.task_done()
 
 async with TelegramListener(session_manager=manager) as listener:
@@ -113,26 +113,17 @@ Immutable message object. Every instance has a time-sortable ULID `id`.
 | `source` | `str` | Human-readable channel title |
 | `source_id` | `int` | Numeric Telegram chat identifier |
 | `text` | `str` | Sanitized text — unicode-fixed, emoji-stripped |
-| `language` | `str` | Language tag from channel config, or `"unknown"` |
+| `language` | `str` | REMOVED — messages no longer carry a language tag |
 
 ---
 
-### `Channel`
+### Channels
 
-Optional typed wrapper for channel configuration.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `name` | `str` | — | Channel username (`@` prefix is stripped automatically) |
-| `language` | `str` | `"unknown"` | BCP-47 language tag, e.g. `"ar"`, `"en"`, `"es"` |
-
-`set_channels` accepts a mix of plain strings and `Channel` instances:
+`set_channels` accepts a list of channel usernames as plain strings (with or without
+a leading `@`). Example:
 
 ```python
-listener.set_channels([
-    "cnn",                          # equivalent to Channel("cnn")
-    Channel("ajanews", language="ar"),
-])
+listener.set_channels(["cnn", "ajanews"])
 ```
 
 ---

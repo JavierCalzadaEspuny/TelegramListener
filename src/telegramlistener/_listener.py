@@ -17,7 +17,7 @@ from telethon.errors import (
 )
 
 from ._exceptions import ConfigurationError, SessionError
-from ._models import Channel, TelegramStreamedMessage
+from ._models import TelegramStreamedMessage
 from ._session import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -32,11 +32,6 @@ _SENTINEL: TelegramStreamedMessage | None = None
 
 def _sanitize(text: str) -> str:
     return emoji.replace_emoji(ftfy.fix_text(text), replace="").strip()
-
-
-def _to_channel(item: str | Channel) -> Channel:
-    return item if isinstance(item, Channel) else Channel(name=item)
-
 
 class TelegramListener:
     """Streams new messages from configured Telegram channels into an asyncio queue.
@@ -70,7 +65,7 @@ class TelegramListener:
 
     Example:
         >>> listener = TelegramListener(session_manager=manager, queue_maxsize=1000)
-        >>> listener.set_channels(["cnn", Channel("ajanews", language="ar")])
+        >>> listener.set_channels(["cnn", "ajanews"])
         >>> async with listener:
         ...     consumer = asyncio.create_task(consume(listener.queue))
         ...     await listener.start()
@@ -85,30 +80,27 @@ class TelegramListener:
     ) -> None:
         self._manager = session_manager
         self._tz = ZoneInfo(timezone_name)
-        self._channels: list[Channel] = []
+        self._channels: list[str] = []
         self._client = None
         self._stop_event = asyncio.Event()
         self._disconnect_task: asyncio.Task[None] | None = None
         self.queue: asyncio.Queue[TelegramStreamedMessage | None] = asyncio.Queue(
             maxsize=queue_maxsize
         )
-        # chat_id -> (title, language), populated lazily on first message per chat
-        self._chat_meta: dict[int, tuple[str, str]] = {}
+        # chat_id -> title, populated lazily on first message per chat
+        self._chat_meta: dict[int, str] = {}
 
-    def set_channels(self, channels: list[str | Channel]) -> None:
+    def set_channels(self, channels: list[str]) -> None:
         """Configure the channels to monitor.
 
         Args:
-            channels: Channel usernames (``str``) or :class:`Channel` instances.
-                Strings are equivalent to ``Channel(name=s, language="unknown")``.
+            channels: List of channel usernames as strings (with or without a leading "@").
 
         Example:
-            >>> listener.set_channels([
-            ...     "cnn",
-            ...     Channel("ajanews", language="ar"),
-            ... ])
+            >>> listener.set_channels(["cnn", "ajanews"])
         """
-        self._channels = [_to_channel(item) for item in channels]
+        # Normalize names: strip whitespace and leading '@', keep lowercase
+        self._channels = [s.strip().lstrip("@").lower() for s in channels]
 
     async def start(self) -> None:
         """Start the listener and block until stopped or the session is invalidated.
@@ -130,7 +122,7 @@ class TelegramListener:
         self._client = await self._manager.get_authorized_client()
         self._client.add_event_handler(
             self._on_message,
-            events.NewMessage(chats=[c.name for c in self._channels]),
+            events.NewMessage(chats=[c for c in self._channels]),
         )
         logger.info("Listener started. Monitoring %d channel(s).", len(self._channels))
 
@@ -217,21 +209,14 @@ class TelegramListener:
             if chat_id not in self._chat_meta:
                 chat = await event.message.get_chat()
                 title = getattr(chat, "title", str(chat_id))
-                raw = getattr(chat, "username", None) or title
-                username = raw.strip().lstrip("@").lower()
-                language = next(
-                    (c.language for c in self._channels if c.name.lower() == username),
-                    "unknown",
-                )
-                self._chat_meta[chat_id] = (title, language)
+                self._chat_meta[chat_id] = title
 
-            title, language = self._chat_meta[chat_id]
+            title = self._chat_meta[chat_id]
             msg = TelegramStreamedMessage(
                 timestamp=int(event.message.date.astimezone(self._tz).timestamp()),
                 source=title,
                 source_id=chat_id,
                 text=text,
-                language=language,
             )
 
             try:

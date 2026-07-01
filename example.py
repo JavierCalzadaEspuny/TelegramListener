@@ -17,7 +17,6 @@ import os
 from dotenv import load_dotenv
 
 from telegramlistener import (
-    Channel,
     SessionManager,
     TelegramListener,
     TelegramStreamedMessage,
@@ -59,7 +58,7 @@ async def main() -> None:
     async with TelegramListener(session_manager=manager) as listener:
         listener.set_channels([
             "me_observer_tg",
-            Channel("ajanews", language="ar"),
+            "ajanews",
         ])
         consumer = asyncio.create_task(consume(listener.queue))
         try:
