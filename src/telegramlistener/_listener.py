@@ -120,6 +120,16 @@ class TelegramListener:
             )
 
         self._client = await self._manager.get_authorized_client()
+
+        # Prefetch chat metadata to avoid hot `get_chat` calls inside the event handler.
+        logger.info("Resolving channel metadata to eliminate runtime lookups...")
+        for channel in self._channels:
+            try:
+                entity = await self._client.get_entity(channel)
+                self._chat_meta[entity.id] = getattr(entity, "title", channel)
+            except Exception as exc:
+                logger.warning("Could not resolve metadata for %s: %s", channel, exc)
+
         self._client.add_event_handler(
             self._on_message,
             events.NewMessage(chats=[c for c in self._channels]),
@@ -129,41 +139,59 @@ class TelegramListener:
         attempt = 0
         while not self._stop_event.is_set():
             try:
+                # Telethon manages low-level reconnections; run_until_disconnected
+                # only raises on fatal session errors or when the client is explicitly
+                # disconnected.
                 await self._client.run_until_disconnected()
                 break
             except _FATAL_ERRORS as exc:
                 logger.error(
-                    "Session permanently invalidated (%s). Stopping.",
+                    "Session permanently invalidated (%s) during execution. Stopping loop.",
                     type(exc).__name__,
                 )
+                # Attempt best-effort cleanup of the session file to avoid reuse.
+                try:
+                    self._manager._cleanup()
+                except Exception:
+                    logger.debug("Session cleanup failed or is unavailable.")
                 break
             except Exception as exc:
                 if self._stop_event.is_set():
                     break
-                delay = min(_BACKOFF_CAP, _BACKOFF_BASE**attempt) + random.uniform(0, 1)
+
+                attempt += 1
+                delay = min(_BACKOFF_CAP, _BACKOFF_BASE ** attempt) + random.uniform(0, 1)
                 logger.warning(
-                    "Connection lost (%s). Reconnecting in %.1f s (attempt %d).",
+                    "Unexpected protocol/API error (%s). Reconnecting client in %.1f s (attempt %d).",
                     exc,
                     delay,
-                    attempt + 1,
+                    attempt,
                 )
+
                 try:
                     await asyncio.wait_for(
                         asyncio.shield(self._stop_event.wait()),
                         timeout=delay,
                     )
-                    break  # stop was requested during the backoff window
+                    break  # stop_event set during backoff
                 except asyncio.TimeoutError:
                     pass
 
-                if not await self._manager.is_operational():
-                    logger.error(
-                        "Session is no longer valid after reconnect attempt. Stopping."
-                    )
+                # Try to reconnect the same client instead of creating new ones.
+                try:
+                    if not self._client.is_connected():
+                        await self._client.connect()
+                    # Reset attempt counter after a successful reconnect
+                    attempt = 0
+                except _FATAL_ERRORS as fatal_exc:
+                    logger.error("Session revoked during reconnect attempt: %s", fatal_exc)
+                    try:
+                        self._manager._cleanup()
+                    except Exception:
+                        logger.debug("Session cleanup failed or is unavailable.")
                     break
-
-                await self._client.connect()
-                attempt += 1
+                except Exception as reconnect_exc:
+                    logger.error("Reconnection attempt failed: %s. Retrying next loop.", reconnect_exc)
 
         # Signal consumers that no more messages will arrive.
         await self.queue.put(_SENTINEL)

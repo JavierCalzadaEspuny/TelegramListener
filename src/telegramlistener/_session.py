@@ -86,20 +86,30 @@ class SessionManager:
         if not self._session_file.exists():
             return False
 
-        client = TelegramClient(str(self._session_path), self.api_id, self.api_hash)
+        client = None
         try:
+            client = TelegramClient(str(self._session_path), self.api_id, self.api_hash)
             await client.connect()
             authorized = await client.is_user_authorized()
         except _FATAL_SESSION_ERRORS:
             logger.warning(
                 "Session %r is revoked or corrupted — cleaning up.", self.session_name
             )
-            self._cleanup()
+            try:
+                self._cleanup()
+            except Exception:
+                logger.debug("Session cleanup failed during fatal error handling.")
             return False
         except Exception as exc:
             logger.warning(
                 "Session health check failed (%s) — treating as inoperational.", exc
             )
+            # If session file is malformed or incompatible, try removing it to
+            # avoid repeated crashes on subsequent runs.
+            try:
+                self._cleanup()
+            except Exception:
+                logger.debug("Session cleanup failed after health check error.")
             return False
         else:
             if not authorized:
@@ -107,11 +117,18 @@ class SessionManager:
                     "Session %r exists but is no longer authorized — cleaning up.",
                     self.session_name,
                 )
-                self._cleanup()
+                try:
+                    self._cleanup()
+                except Exception:
+                    logger.debug("Session cleanup failed when deauthorizing.")
                 return False
             return True
         finally:
-            await client.disconnect()
+            if client is not None:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    logger.debug("Disconnect failed during session health check finalization.")
 
     async def run_manual_login(self) -> None:
         """Run the interactive terminal login flow and persist the session.
