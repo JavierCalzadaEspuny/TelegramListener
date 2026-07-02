@@ -94,13 +94,18 @@ class TelegramListener:
         """Configure the channels to monitor.
 
         Args:
-            channels: List of channel usernames as strings (with or without a leading "@").
+            channels: List of channel usernames as strings, with or without a
+                leading "@".
 
         Example:
             >>> listener.set_channels(["cnn", "ajanews"])
         """
-        # Normalize names: strip whitespace and leading '@', keep lowercase
-        self._channels = [s.strip().lstrip("@").lower() for s in channels]
+        self._channels = [
+            channel
+            .strip()
+            .lstrip("@").lower()
+            for channel in channels
+        ]
 
     async def start(self) -> None:
         """Start the listener and block until stopped or the session is invalidated.

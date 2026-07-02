@@ -50,7 +50,7 @@ async def consume(queue: asyncio.Queue) -> None:
         queue.task_done()
 
 async with TelegramListener(session_manager=manager) as listener:
-    listener.set_channels(["cnn", Channel("ajanews", language="ar")])
+    listener.set_channels(["cnn", "ajanews"])
     consumer = asyncio.create_task(consume(listener.queue))
     try:
         await listener.start()
@@ -113,7 +113,6 @@ Immutable message object. Every instance has a time-sortable ULID `id`.
 | `source` | `str` | Human-readable channel title |
 | `source_id` | `int` | Numeric Telegram chat identifier |
 | `text` | `str` | Sanitized text — unicode-fixed, emoji-stripped |
-| `language` | `str` | REMOVED — messages no longer carry a language tag |
 
 ---
 

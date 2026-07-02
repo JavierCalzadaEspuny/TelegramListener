@@ -44,7 +44,6 @@ A frozen dataclass produced by `TelegramListener` for every incoming message.
 | `source` | `str` | Human-readable channel title (e.g. `"Al Jazeera"`). |
 | `source_id` | `int` | Numeric Telegram chat identifier. Negative for channels/supergroups. |
 | `text` | `str` | Sanitized text: unicode-fixed (`ftfy`) and emoji-stripped (`emoji`). |
-| `language` | `str` | REMOVED — messages no longer carry a language tag. |
 | `id` | `str` | Auto-generated time-sortable ULID (26 chars). Not set via `__init__`. |
 
 `id` is created in `__post_init__` via `ulid.ULID()`. Because ULIDs embed a millisecond timestamp, messages can be sorted by `id` to recover arrival order.
