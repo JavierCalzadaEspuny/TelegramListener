@@ -9,12 +9,13 @@ from zoneinfo import ZoneInfo
 
 import emoji
 import ftfy
-from telethon import events
+from telethon import TelegramClient, events
 from telethon.errors import (
     AuthKeyDuplicatedError,
     AuthKeyUnregisteredError,
     UserDeactivatedError,
 )
+from telethon.tl.custom.message import Message
 
 from ._exceptions import ConfigurationError, SessionError
 from ._models import TelegramStreamedMessage
@@ -31,7 +32,31 @@ _SENTINEL: TelegramStreamedMessage | None = None
 
 
 def _sanitize(text: str) -> str:
+    """Removes emojis and fixes broken unicode text."""
     return emoji.replace_emoji(ftfy.fix_text(text), replace="").strip()
+
+
+async def _download_image_bytes(message: Message) -> bytes | None:
+    """Safely attempts to download media from a message as bytes."""
+    if getattr(message, "photo", None) is None:
+        return None
+
+    payload = await message.download_media(file=bytes)
+    return payload if isinstance(payload, bytes) else None
+
+
+async def _resolve_chat_meta(
+    message: Message,
+    chat_meta: dict[int, str],
+) -> tuple[int, str]:
+    """Resolves and caches chat title by ID to minimize API calls."""
+    chat_id = message.chat_id
+    if chat_id not in chat_meta:
+        chat = await message.get_chat()
+        chat_meta[chat_id] = getattr(chat, "title", str(chat_id))
+
+    return chat_id, chat_meta[chat_id]
+
 
 class TelegramListener:
     """Streams new messages from configured Telegram channels into an asyncio queue.
@@ -48,28 +73,14 @@ class TelegramListener:
     called, or when the Telegram session is permanently invalidated.
 
     **Backpressure**: pass ``maxsize`` to cap queue depth. When the queue is full,
-    ``_on_message`` drops the incoming message and emits a warning rather than
-    blocking the Telethon event loop.
+    incoming messages are dropped and a warning is emitted to prevent blocking
+    the Telethon event loop.
 
     Args:
         session_manager: An authorized :class:`SessionManager` instance.
-        timezone_name: IANA timezone for normalizing message timestamps.
-            Default ``"UTC"``.
+        timezone_name: IANA timezone validated at initialization.
         queue_maxsize: Maximum number of messages buffered in :attr:`queue`.
-            ``0`` (default) means unbounded — only use this if your consumer
-            is guaranteed to keep up.
-
-    Raises:
-        zoneinfo.ZoneInfoNotFoundError: If ``timezone_name`` is not a valid IANA
-            timezone.
-
-    Example:
-        >>> listener = TelegramListener(session_manager=manager, queue_maxsize=1000)
-        >>> listener.set_channels(["cnn", "ajanews"])
-        >>> async with listener:
-        ...     consumer = asyncio.create_task(consume(listener.queue))
-        ...     await listener.start()
-        ...     consumer.cancel()
+            ``0`` (default) means unbounded.
     """
 
     def __init__(
@@ -79,41 +90,25 @@ class TelegramListener:
         queue_maxsize: int = 0,
     ) -> None:
         self._manager = session_manager
-        self._tz = ZoneInfo(timezone_name)
+        ZoneInfo(timezone_name)
         self._channels: list[str] = []
-        self._client = None
+        self._client: TelegramClient | None = None
         self._stop_event = asyncio.Event()
         self._disconnect_task: asyncio.Task[None] | None = None
         self.queue: asyncio.Queue[TelegramStreamedMessage | None] = asyncio.Queue(
             maxsize=queue_maxsize
         )
-        # chat_id -> title, populated lazily on first message per chat
         self._chat_meta: dict[int, str] = {}
 
     def set_channels(self, channels: list[str]) -> None:
-        """Configure the channels to monitor.
-
-        Args:
-            channels: List of channel usernames as strings, with or without a
-                leading "@".
-
-        Example:
-            >>> listener.set_channels(["cnn", "ajanews"])
-        """
+        """Configure the channels to monitor."""
         self._channels = [
-            channel
-            .strip()
-            .lstrip("@").lower()
+            channel.strip().lstrip("@").lower()
             for channel in channels
         ]
 
     async def start(self) -> None:
-        """Start the listener and block until stopped or the session is invalidated.
-
-        Raises:
-            ConfigurationError: If :meth:`set_channels` was not called before start.
-            SessionError: If the session is not operational at startup.
-        """
+        """Start the listener and block until stopped or invalidated."""
         if not self._channels:
             raise ConfigurationError(
                 "No channels configured. Call set_channels() before start()."
@@ -126,39 +121,27 @@ class TelegramListener:
 
         self._client = await self._manager.get_authorized_client()
 
-        # Prefetch chat metadata to avoid hot `get_chat` calls inside the event handler.
-        logger.info("Resolving channel metadata to eliminate runtime lookups...")
-        for channel in self._channels:
-            try:
-                entity = await self._client.get_entity(channel)
-                self._chat_meta[entity.id] = getattr(entity, "title", channel)
-            except Exception as exc:
-                logger.warning("Could not resolve metadata for %s: %s", channel, exc)
-
         self._client.add_event_handler(
-            self._on_message,
-            events.NewMessage(chats=[c for c in self._channels]),
+            self._on_new_message,
+            events.NewMessage(chats=self._channels),
+        )
+        self._client.add_event_handler(
+            self._on_album,
+            events.Album(chats=self._channels),
         )
         logger.info("Listener started. Monitoring %d channel(s).", len(self._channels))
 
         attempt = 0
         while not self._stop_event.is_set():
             try:
-                # Telethon manages low-level reconnections; run_until_disconnected
-                # only raises on fatal session errors or when the client is explicitly
-                # disconnected.
                 await self._client.run_until_disconnected()
                 break
             except _FATAL_ERRORS as exc:
                 logger.error(
-                    "Session permanently invalidated (%s) during execution. Stopping loop.",
+                    "Session permanently invalidated (%s). Stopping loop.",
                     type(exc).__name__,
                 )
-                # Attempt best-effort cleanup of the session file to avoid reuse.
-                try:
-                    self._manager._cleanup()
-                except Exception:
-                    logger.debug("Session cleanup failed or is unavailable.")
+                self._safely_cleanup_session()
                 break
             except Exception as exc:
                 if self._stop_event.is_set():
@@ -167,7 +150,7 @@ class TelegramListener:
                 attempt += 1
                 delay = min(_BACKOFF_CAP, _BACKOFF_BASE ** attempt) + random.uniform(0, 1)
                 logger.warning(
-                    "Unexpected protocol/API error (%s). Reconnecting client in %.1f s (attempt %d).",
+                    "Unexpected error (%s). Reconnecting in %.1f s (attempt %d).",
                     exc,
                     delay,
                     attempt,
@@ -175,55 +158,44 @@ class TelegramListener:
 
                 try:
                     await asyncio.wait_for(
-                        asyncio.shield(self._stop_event.wait()),
-                        timeout=delay,
+                        asyncio.shield(self._stop_event.wait()), timeout=delay
                     )
-                    break  # stop_event set during backoff
+                    break
                 except asyncio.TimeoutError:
                     pass
 
-                # Try to reconnect the same client instead of creating new ones.
                 try:
                     if not self._client.is_connected():
                         await self._client.connect()
-                    # Reset attempt counter after a successful reconnect
                     attempt = 0
                 except _FATAL_ERRORS as fatal_exc:
-                    logger.error("Session revoked during reconnect attempt: %s", fatal_exc)
-                    try:
-                        self._manager._cleanup()
-                    except Exception:
-                        logger.debug("Session cleanup failed or is unavailable.")
+                    logger.error("Session revoked during reconnect: %s", fatal_exc)
+                    self._safely_cleanup_session()
                     break
                 except Exception as reconnect_exc:
-                    logger.error("Reconnection attempt failed: %s. Retrying next loop.", reconnect_exc)
+                    logger.error("Reconnection failed: %s. Retrying.", reconnect_exc)
 
-        # Signal consumers that no more messages will arrive.
         await self.queue.put(_SENTINEL)
 
-    def stop(self) -> None:
-        """Request a graceful shutdown. Returns immediately; shutdown is asynchronous.
+    def _safely_cleanup_session(self) -> None:
+        """Attempts best-effort cleanup of the session file."""
+        try:
+            self._manager._cleanup()
+        except Exception:
+            logger.debug("Session cleanup failed or is unavailable.")
 
-        Prefer :meth:`aclose` when you can ``await`` — it guarantees the client
-        is disconnected before returning.
-        """
+    def stop(self) -> None:
+        """Request a graceful shutdown non-blockingly."""
         self._stop_event.set()
-        if self._client is not None and self._client.is_connected():
-            self._disconnect_task = asyncio.ensure_future(
-                self._client.disconnect()
-            )
+        if self._client and self._client.is_connected():
+            self._disconnect_task = asyncio.create_task(self._client.disconnect())
 
     async def aclose(self) -> None:
-        """Shut down the listener and disconnect the Telegram client.
-
-        Awaiting this guarantees the client is disconnected before returning.
-        Use in ``finally`` blocks or as part of an ``async with`` statement.
-        """
+        """Shut down the listener and disconnect the Telegram client robustly."""
         self._stop_event.set()
-        if self._client is not None and self._client.is_connected():
+        if self._client and self._client.is_connected():
             await self._client.disconnect()
         if self._disconnect_task is not None:
-            # If stop() fired a disconnect task, wait for it to finish.
             await asyncio.shield(self._disconnect_task)
 
     async def __aenter__(self) -> TelegramListener:
@@ -232,36 +204,70 @@ class TelegramListener:
     async def __aexit__(self, *_: object) -> None:
         await self.aclose()
 
-    async def _on_message(self, event: events.NewMessage.Event) -> None:
+    async def _enqueue_message(
+        self, base_message: Message, text: str, image_bytes_list: list[bytes]
+    ) -> None:
+        """DRY helper to construct and safely enqueue the streamed message."""
+        chat_id, title = await _resolve_chat_meta(base_message, self._chat_meta)
+        streamed_message = TelegramStreamedMessage(
+            timestamp=int(base_message.date.timestamp()),
+            source=title,
+            source_id=chat_id,
+            text=text,
+            image_bytes_list=image_bytes_list,
+        )
+
         try:
-            text = _sanitize((event.message.message or "").strip())
-            if not text:
-                return
-
-            chat_id = event.message.chat_id
-            if chat_id not in self._chat_meta:
-                chat = await event.message.get_chat()
-                title = getattr(chat, "title", str(chat_id))
-                self._chat_meta[chat_id] = title
-
-            title = self._chat_meta[chat_id]
-            msg = TelegramStreamedMessage(
-                timestamp=int(event.message.date.astimezone(self._tz).timestamp()),
-                source=title,
-                source_id=chat_id,
-                text=text,
+            self.queue.put_nowait(streamed_message)
+        except asyncio.QueueFull:
+            logger.warning(
+                "Queue full (maxsize=%d) — dropping message from %r.",
+                self.queue.maxsize, title
             )
 
-            try:
-                self.queue.put_nowait(msg)
-            except asyncio.QueueFull:
-                logger.warning(
-                    "Queue full (maxsize=%d) — dropping message from %r.",
-                    self.queue.maxsize,
-                    title,
-                )
+    async def _on_new_message(self, event: events.NewMessage.Event) -> None:
+        try:
+            if event.message.grouped_id is not None:
+                return
+
+            message = event.message
+            text = _sanitize((message.text or "").strip())
+            
+            image_bytes = await _download_image_bytes(message)
+            image_bytes_list = [image_bytes] if image_bytes else []
+
+            if not text and not image_bytes_list:
+                return
+
+            await self._enqueue_message(message, text, image_bytes_list)
+
         except Exception:
             logger.exception(
                 "Unhandled error processing message from chat_id=%s.",
                 event.message.chat_id,
+            )
+
+    async def _on_album(self, event: events.Album.Event) -> None:
+        try:
+            messages = event.messages
+            if not messages:
+                return
+
+            text = _sanitize((messages[0].text or "").strip())
+
+            image_bytes_list: list[bytes] = []
+            for message in messages:
+                image_bytes = await _download_image_bytes(message)
+                if image_bytes is not None:
+                    image_bytes_list.append(image_bytes)
+
+            if not image_bytes_list and not text:
+                return
+
+            await self._enqueue_message(messages[0], text, image_bytes_list)
+
+        except Exception:
+            logger.exception(
+                "Unhandled error processing album from chat_id=%s.",
+                event.messages[0].chat_id if event.messages else "unknown",
             )
