@@ -128,7 +128,9 @@ class SessionManager:
                 try:
                     await client.disconnect()
                 except Exception:
-                    logger.debug("Disconnect failed during session health check finalization.")
+                    logger.debug(
+                        "Disconnect failed during session health check finalization."
+                    )
 
     async def run_manual_login(self) -> None:
         """Run the interactive terminal login flow and persist the session.

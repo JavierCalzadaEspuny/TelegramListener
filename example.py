@@ -80,9 +80,7 @@ async def main() -> None:
         await manager.run_manual_login()
 
     async with TelegramListener(session_manager=manager) as listener:
-        listener.set_channels([
-            "testosint01"
-        ])
+        listener.set_channels(["testosint01"])
         consumer = asyncio.create_task(consume(listener.queue))
         try:
             await listener.start()

@@ -53,15 +53,19 @@ async def _download_image_bytes(message: Message) -> bytes | None:
 
 async def _resolve_chat_meta(
     message: Message,
-    chat_meta: dict[int, str],
-) -> tuple[int, str]:
-    """Resolves and caches chat title by ID to minimize API calls."""
+    chat_meta: dict[int, tuple[str, str | None]],
+) -> tuple[int, str, str | None]:
+    """Resolves and caches chat title and Telegram username by ID."""
     chat_id = message.chat_id
     if chat_id not in chat_meta:
         chat = await message.get_chat()
-        chat_meta[chat_id] = getattr(chat, "title", str(chat_id))
+        chat_meta[chat_id] = (
+            getattr(chat, "title", str(chat_id)),
+            getattr(chat, "username", None),
+        )
 
-    return chat_id, chat_meta[chat_id]
+    title, source_username = chat_meta[chat_id]
+    return chat_id, title, source_username
 
 
 class TelegramListener:
@@ -104,7 +108,7 @@ class TelegramListener:
         self.queue: asyncio.Queue[TelegramStreamedMessage | None] = asyncio.Queue(
             maxsize=queue_maxsize
         )
-        self._chat_meta: dict[int, str] = {}
+        self._chat_meta: dict[int, tuple[str, str | None]] = {}
 
     def set_channels(self, channels: list[str]) -> None:
         """Configure the channels to monitor."""
@@ -214,10 +218,13 @@ class TelegramListener:
         self, base_message: Message, text: str | None, images: list[bytes]
     ) -> None:
         """DRY helper to construct and safely enqueue the streamed message."""
-        chat_id, title = await _resolve_chat_meta(base_message, self._chat_meta)
+        chat_id, title, source_username = await _resolve_chat_meta(
+            base_message, self._chat_meta
+        )
         streamed_message = TelegramStreamedMessage(
             timestamp=int(base_message.date.timestamp()),
             source=title,
+            source_username=source_username,
             source_id=chat_id,
             text=text,
             images=images,

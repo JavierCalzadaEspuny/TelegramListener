@@ -16,6 +16,7 @@ class TelegramStreamedMessage:
     Attributes:
         timestamp: Unix timestamp (UTC seconds) of the original Telegram message.
         source: Human-readable channel title.
+        source_username: Telegram channel username/slug when available.
         source_id: Numeric Telegram chat identifier.
         text: Sanitized message text — unicode-fixed, emoji-stripped, or None when
             the message has no text/caption.
@@ -27,6 +28,7 @@ class TelegramStreamedMessage:
         >>> msg = TelegramStreamedMessage(
         ...     timestamp=1700000000,
         ...     source="Al Jazeera",
+        ...     source_username="aljazeera",
         ...     source_id=-1001234567890,
         ...     text="Breaking news...",
         ...     images=[],
@@ -36,6 +38,7 @@ class TelegramStreamedMessage:
     """
     id: str = field(init=False)
     timestamp: int
+    source_username: str | None
     source: str
     source_id: int
     text: str | None
@@ -52,6 +55,7 @@ class TelegramStreamedMessage:
             f"TelegramStreamedMessage("
             f"id={self.id!r}, "
             f"source={self.source!r}, "
+            f"source_username={self.source_username!r}, "
             f"timestamp={self.timestamp}, "
             f"text={preview!r}, "
             f"images={len(self.images)})"

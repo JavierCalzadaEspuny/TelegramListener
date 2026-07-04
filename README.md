@@ -111,6 +111,7 @@ Immutable message object. Every instance has a time-sortable ULID `id`.
 | `id` | `str` | Time-sortable ULID (26 chars), auto-generated |
 | `timestamp` | `int` | Unix timestamp (UTC seconds) of the original message |
 | `source` | `str` | Human-readable channel title |
+| `source_username` | `str \| None` | Telegram channel username/slug when available |
 | `source_id` | `int` | Numeric Telegram chat identifier |
 | `text` | `str \| None` | Sanitized text — unicode-fixed, emoji-stripped, or `None` when no text/caption is present |
 | `images` | `list[bytes]` | Always a list of attached images; empty when there are none |
@@ -121,6 +122,7 @@ The listener normalizes every message into this shape:
 
 - `timestamp`: always present.
 - `source`: always present.
+- `source_username`: present when Telegram exposes a channel username.
 - `source_id`: always present.
 - `id`: always present.
 - `text`: either a sanitized string or `None`.
