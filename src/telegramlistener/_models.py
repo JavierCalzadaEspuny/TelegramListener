@@ -17,8 +17,10 @@ class TelegramStreamedMessage:
         timestamp: Unix timestamp (UTC seconds) of the original Telegram message.
         source: Human-readable channel title.
         source_id: Numeric Telegram chat identifier.
-        text: Sanitized message text — unicode-fixed, emoji-stripped.
-        images: List of in-memory binary payloads for attached photos.
+        text: Sanitized message text — unicode-fixed, emoji-stripped, or None when
+            the message has no text/caption.
+        images: Always a list of in-memory binary payloads for attached photos.
+            The list may be empty when the message has no images.
         id: Time-sortable ULID string (26 characters), unique per instance.
 
     Example:
@@ -27,6 +29,7 @@ class TelegramStreamedMessage:
         ...     source="Al Jazeera",
         ...     source_id=-1001234567890,
         ...     text="Breaking news...",
+        ...     images=[],
         ... )
         >>> len(msg.id)
         26
@@ -35,7 +38,7 @@ class TelegramStreamedMessage:
     timestamp: int
     source: str
     source_id: int
-    text: str
+    text: str | None
     id: str = field(init=False)
     images: list[bytes] = field(default_factory=list)
 
@@ -43,7 +46,9 @@ class TelegramStreamedMessage:
         object.__setattr__(self, "id", str(ulid.ULID()))
 
     def __repr__(self) -> str:
-        preview = self.text[:50] + "..." if len(self.text) > 50 else self.text
+        preview = None
+        if self.text is not None:
+            preview = self.text[:50] + "..." if len(self.text) > 50 else self.text
         return (
             f"TelegramStreamedMessage("
             f"id={self.id!r}, "

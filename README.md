@@ -112,7 +112,25 @@ Immutable message object. Every instance has a time-sortable ULID `id`.
 | `timestamp` | `int` | Unix timestamp (UTC seconds) of the original message |
 | `source` | `str` | Human-readable channel title |
 | `source_id` | `int` | Numeric Telegram chat identifier |
-| `text` | `str` | Sanitized text — unicode-fixed, emoji-stripped |
+| `text` | `str \| None` | Sanitized text — unicode-fixed, emoji-stripped, or `None` when no text/caption is present |
+| `images` | `list[bytes]` | Always a list of attached images; empty when there are none |
+
+## Message Shape
+
+The listener normalizes every message into this shape:
+
+- `timestamp`: always present.
+- `source`: always present.
+- `source_id`: always present.
+- `id`: always present.
+- `text`: either a sanitized string or `None`.
+- `images`: always a list, possibly empty.
+
+That means these cases are all valid:
+
+- text only: `text="hello"`, `images=[]`
+- images only: `text=None`, `images=[...]`
+- text and images: `text="caption"`, `images=[...]`
 
 ---
 

@@ -31,9 +31,15 @@ _FATAL_ERRORS = (AuthKeyDuplicatedError, AuthKeyUnregisteredError, UserDeactivat
 _SENTINEL: TelegramStreamedMessage | None = None
 
 
-def _sanitize(text: str) -> str:
-    """Removes emojis and fixes broken unicode text."""
-    return emoji.replace_emoji(ftfy.fix_text(text), replace="").strip()
+def _sanitize(text: str | None) -> str | None:
+    """
+    Removes emojis and fixes broken unicode text.
+    Returns None when the input is empty or sanitizes down to an empty string.
+    """
+    if text is None:
+        return None
+    sanitized = emoji.replace_emoji(ftfy.fix_text(text), replace="").strip()
+    return sanitized or None
 
 
 async def _download_image_bytes(message: Message) -> bytes | None:
@@ -205,7 +211,7 @@ class TelegramListener:
         await self.aclose()
 
     async def _enqueue_message(
-        self, base_message: Message, text: str, images: list[bytes]
+        self, base_message: Message, text: str | None, images: list[bytes]
     ) -> None:
         """DRY helper to construct and safely enqueue the streamed message."""
         chat_id, title = await _resolve_chat_meta(base_message, self._chat_meta)
@@ -232,9 +238,9 @@ class TelegramListener:
 
             message = event.message
             text = _sanitize((message.text or "").strip())
-            
+
             image_bytes = await _download_image_bytes(message)
-            images = [image_bytes] if image_bytes else []
+            images = [image_bytes] if image_bytes is not None else []
 
             if not text and not images:
                 return
