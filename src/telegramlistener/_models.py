@@ -18,7 +18,7 @@ class TelegramStreamedMessage:
         source: Human-readable channel title.
         source_id: Numeric Telegram chat identifier.
         text: Sanitized message text — unicode-fixed, emoji-stripped.
-        image_bytes_list: In-memory binary payloads for attached photos.
+        images: List of in-memory binary payloads for attached photos.
         id: Time-sortable ULID string (26 characters), unique per instance.
 
     Example:
@@ -37,7 +37,7 @@ class TelegramStreamedMessage:
     source_id: int
     text: str
     id: str = field(init=False)
-    image_bytes_list: list[bytes] = field(default_factory=list)
+    images: list[bytes] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", str(ulid.ULID()))
@@ -50,5 +50,5 @@ class TelegramStreamedMessage:
             f"source={self.source!r}, "
             f"timestamp={self.timestamp}, "
             f"text={preview!r}, "
-            f"images={len(self.image_bytes_list)})"
+            f"images={len(self.images)})"
         )

@@ -47,11 +47,11 @@ def _detect_image_format(image_bytes: bytes) -> str:
 
 
 def _describe_images(msg: TelegramStreamedMessage) -> None:
-    if not msg.image_bytes_list:
+    if not msg.images:
         return
 
-    print(f"    Images: {len(msg.image_bytes_list)}")
-    for index, image_bytes in enumerate(msg.image_bytes_list, start=1):
+    print(f"    Images: {len(msg.images)}")
+    for index, image_bytes in enumerate(msg.images, start=1):
         image_format = _detect_image_format(image_bytes)
         print(f"    [{index}] Format: {image_format}, Size: {len(image_bytes)} bytes")
 

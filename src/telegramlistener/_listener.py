@@ -205,7 +205,7 @@ class TelegramListener:
         await self.aclose()
 
     async def _enqueue_message(
-        self, base_message: Message, text: str, image_bytes_list: list[bytes]
+        self, base_message: Message, text: str, images: list[bytes]
     ) -> None:
         """DRY helper to construct and safely enqueue the streamed message."""
         chat_id, title = await _resolve_chat_meta(base_message, self._chat_meta)
@@ -214,7 +214,7 @@ class TelegramListener:
             source=title,
             source_id=chat_id,
             text=text,
-            image_bytes_list=image_bytes_list,
+            images=images,
         )
 
         try:
@@ -234,12 +234,12 @@ class TelegramListener:
             text = _sanitize((message.text or "").strip())
             
             image_bytes = await _download_image_bytes(message)
-            image_bytes_list = [image_bytes] if image_bytes else []
+            images = [image_bytes] if image_bytes else []
 
-            if not text and not image_bytes_list:
+            if not text and not images:
                 return
 
-            await self._enqueue_message(message, text, image_bytes_list)
+            await self._enqueue_message(message, text, images)
 
         except Exception:
             logger.exception(
@@ -255,16 +255,16 @@ class TelegramListener:
 
             text = _sanitize((messages[0].text or "").strip())
 
-            image_bytes_list: list[bytes] = []
+            images: list[bytes] = []
             for message in messages:
                 image_bytes = await _download_image_bytes(message)
                 if image_bytes is not None:
-                    image_bytes_list.append(image_bytes)
+                    images.append(image_bytes)
 
-            if not image_bytes_list and not text:
+            if not images and not text:
                 return
 
-            await self._enqueue_message(messages[0], text, image_bytes_list)
+            await self._enqueue_message(messages[0], text, images)
 
         except Exception:
             logger.exception(
