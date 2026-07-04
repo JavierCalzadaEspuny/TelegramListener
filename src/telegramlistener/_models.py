@@ -34,12 +34,11 @@ class TelegramStreamedMessage:
         >>> len(msg.id)
         26
     """
-
+    id: str = field(init=False)
     timestamp: int
     source: str
     source_id: int
     text: str | None
-    id: str = field(init=False)
     images: list[bytes] = field(default_factory=list)
 
     def __post_init__(self) -> None:
